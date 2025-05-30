@@ -94,3 +94,8 @@ The tool generates a PNG file containing a hierarchical diagram of your database
 - Optional: color, dark mode, custom font, and custom arrow style
 
 ---
+
+ ### Disclaimer:
+ AI tools were used in the making of db_mapper
+ 
+ ---
