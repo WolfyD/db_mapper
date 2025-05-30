@@ -76,6 +76,7 @@ class DatabaseMapper:
         self.dark_mode: bool = False
         self.full_mode: bool = False
         self.diagram_font: str = 'Consolas'
+        self.arrow_type: str = 'curved'
         
     def _find_potential_relationships(self) -> List[Tuple[str, str, str]]:
         """Find potential relationships based on column naming patterns, including advanced pluralization."""
@@ -384,6 +385,17 @@ class DatabaseMapper:
             else:
                 dot.edge(table1, table2, label=rel_type, color=edge_color, fontcolor=edge_color)
 
+        # Set edge style based on arrow_type
+        arrow_type = getattr(self, 'arrow_type', 'curved')
+        if arrow_type == 'curved':
+            dot.attr(splines='true')
+        elif arrow_type == 'polyline':
+            dot.attr(splines='polyline')
+        elif arrow_type == 'ortho':
+            dot.attr(splines='ortho')
+        else:
+            dot.attr(splines='true')  # fallback
+
         # Save diagram
         dot.render(output_path, format='png', cleanup=True)
 
@@ -406,6 +418,7 @@ def main():
     parser.add_argument('--dark', '-d', action='store_true', help='Use a dark background and light foreground')
     parser.add_argument('--full', '-f', action='store_true', help='Show all columns and increase spacing between tables')
     parser.add_argument('--font', type=str, default='Consolas', help='Font to use for diagram (e.g., Arial, Helvetica, Consolas, Courier, Times, Verdana, Tahoma, Trebuchet MS, Georgia, Palatino, Impact, Comic Sans MS)')
+    parser.add_argument('--arrow-type', '-t', type=str, default='curved', choices=['curved', 'polyline', 'ortho'], help='Arrow style: curved (default), polyline (straight lines), or ortho (straight lines with right angles)')
 
     args = parser.parse_args()
     
@@ -414,6 +427,7 @@ def main():
     mapper.dark_mode = args.dark
     mapper.full_mode = args.full
     mapper.diagram_font = args.font
+    mapper.arrow_type = args.arrow_type
     
     if args.input_file.endswith('.db') or args.input_file.endswith('.sqlite') or args.input_file.endswith('.sqlite3'):
         mapper.parse_sqlite_db(args.input_file)
