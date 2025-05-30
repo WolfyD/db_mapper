@@ -13,6 +13,7 @@ A Python tool that creates hierarchical diagrams from SQLite databases or SQL sc
 - **Cluster tables** by prefix for better organization
 - **Customizable font** for all diagram text
 - **Customizable arrow style**: choose between curved, straight, or right-angled connectors
+- **Generate SQL for missing foreign keys** with `--create-keys` and `--create-sqlite-keys`
 
 ## Installation
 
@@ -62,11 +63,29 @@ python db_mapper.py <input_file> [options]
   - `curved` (default): Curved arrows
   - `polyline`: Straight arrows
   - `ortho`: Right-angled (orthogonal) arrows
+- `--create-keys`: Print SQL statements to create all assumed foreign keys and exit. **All other flags are ignored.**
+- `--create-sqlite-keys`: Print assumed FOREIGN KEY clauses for each table (for SQLite CREATE TABLE) and exit. **All other flags are ignored.**
 
 #### Example
 
 ```bash
 python db_mapper.py schema.sql --assume --color --dark --full --font Arial --arrow-type ortho -o my_diagram
+```
+
+#### Example: Generate SQL for missing foreign keys
+
+```bash
+python db_mapper.py schema.sql --create-keys
+```
+This will print a transaction-wrapped list of `ALTER TABLE ... ADD CONSTRAINT ... FOREIGN KEY ... REFERENCES ...` statements for all assumed relationships:
+
+```
+BEGIN;
+ALTER TABLE child_table
+ADD CONSTRAINT fk_child_table_parent_table
+FOREIGN KEY (child_column) REFERENCES parent_table(parent_column);
+...
+COMMIT;
 ```
 
 ### Python API

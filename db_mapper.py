@@ -419,8 +419,54 @@ def main():
     parser.add_argument('--full', '-f', action='store_true', help='Show all columns and increase spacing between tables')
     parser.add_argument('--font', type=str, default='Consolas', help='Font to use for diagram (e.g., Arial, Helvetica, Consolas, Courier, Times, Verdana, Tahoma, Trebuchet MS, Georgia, Palatino, Impact, Comic Sans MS)')
     parser.add_argument('--arrow-type', '-t', type=str, default='curved', choices=['curved', 'polyline', 'ortho'], help='Arrow style: curved (default), polyline (straight lines), or ortho (straight lines with right angles)')
+    parser.add_argument('--create-keys', action='store_true', help='Print SQL statements to create assumed foreign keys and exit')
+    parser.add_argument('--create-sqlite-keys', action='store_true', help='Print assumed FOREIGN KEY clauses for each table (for SQLite CREATE TABLE) and exit')
 
     args = parser.parse_args()
+    
+    if args.create_keys:
+        # Only do key creation logic, ignore all other flags
+        mapper = DatabaseMapper(assume_relationships=True)
+        if args.input_file.endswith('.db') or args.input_file.endswith('.sqlite') or args.input_file.endswith('.sqlite3'):
+            mapper.parse_sqlite_db(args.input_file)
+        else:
+            mapper.parse_sql_file(args.input_file)
+        # Find assumed relationships only
+        assumed = mapper._find_potential_relationships()
+        print('BEGIN;')
+        for child, parent, label in assumed:
+            # label is like 'child_col → parent_col'
+            child_col, parent_col = label.split('→')
+            child_col = child_col.strip()
+            parent_col = parent_col.strip()
+            print(f"ALTER TABLE {child}\nADD CONSTRAINT fk_{child}_{parent}\nFOREIGN KEY ({child_col}) REFERENCES {parent}({parent_col});\n")
+        print('COMMIT;')
+        exit(0)
+    
+    if args.create_sqlite_keys:
+        # Only do key creation logic, ignore all other flags
+        mapper = DatabaseMapper(assume_relationships=True)
+        if args.input_file.endswith('.db') or args.input_file.endswith('.sqlite') or args.input_file.endswith('.sqlite3'):
+            mapper.parse_sqlite_db(args.input_file)
+        else:
+            mapper.parse_sql_file(args.input_file)
+        # Find assumed relationships only
+        assumed = mapper._find_potential_relationships()
+        # Group by child table
+        from collections import defaultdict
+        fk_map = defaultdict(list)
+        for child, parent, label in assumed:
+            child_col, parent_col = label.split('→')
+            child_col = child_col.strip()
+            parent_col = parent_col.strip()
+            fk_map[child].append((child_col, parent, parent_col))
+        for table, fks in fk_map.items():
+            print(f"{table}:")
+            for i, (child_col, parent, parent_col) in enumerate(fks):
+                comma = ',' if i < len(fks) - 1 else ''
+                print(f"    FOREIGN KEY ({child_col}) REFERENCES {parent}({parent_col}){comma}")
+            print()
+        exit(0)
     
     mapper = DatabaseMapper(assume_relationships=args.assume)
     mapper.color_tables = args.color
