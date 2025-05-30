@@ -27,6 +27,8 @@ A Python tool that creates hierarchical diagrams from SQLite databases or SQL sc
    ```
 
 3. Install Graphviz on your system (see https://graphviz.org/download/)
+  
+   Make sure that the executable path is added to the Path environmental variable
 
 ## Usage
 
