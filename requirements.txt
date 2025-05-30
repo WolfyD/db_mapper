@@ -1,0 +1,2 @@
+sqlparse==0.4.4
+graphviz==0.20.1 
