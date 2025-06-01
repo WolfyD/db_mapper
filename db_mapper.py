@@ -77,6 +77,17 @@ class DatabaseMapper:
         self.full_mode: bool = False
         self.diagram_font: str = 'Consolas'
         self.arrow_type: str = 'curved'
+        self.layout: str = 'LR'  # Default left-to-right layout
+        self.compact_mode: bool = False  # Whether to use compact layout
+        self.engine: str = 'dot'  # Default Graphviz engine
+        self.nodesep: float = 0.6  # Default node separation
+        self.ranksep: float = 0.7  # Default rank separation
+        self.overlap: str = None   # Default overlap setting
+        self.sort_by_incoming: bool = False  # Sort tables by incoming connections only if flag is set
+        self.font_size: int = 12  # Default font size
+        self.dpi: int = 96        # Default DPI
+        self.show_indexes: bool = False  # Show index marker in diagram
+        self.indexed_columns: dict = {}  # table_name -> set of indexed column names
         
     def _find_potential_relationships(self) -> List[Tuple[str, str, str]]:
         """Find potential relationships based on column naming patterns, including advanced pluralization."""
@@ -156,6 +167,8 @@ class DatabaseMapper:
         cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
         tables = cursor.fetchall()
         
+        self.indexed_columns = {}
+        
         for table in tables:
             table_name = table[0]
             # Get table schema
@@ -177,6 +190,23 @@ class DatabaseMapper:
                     fk[2],  # referenced table
                     fk[3]   # referenced column
                 ))
+            
+            # Get indexed columns
+            indexed_cols = set()
+            cursor.execute(f"PRAGMA index_list({table_name});")
+            for idx in cursor.fetchall():
+                idx_name = idx[1]
+                # Only consider non-unique indexes and unique indexes (ignore internal PK index)
+                if idx_name.startswith('sqlite_autoindex'):
+                    continue
+                cursor.execute(f"PRAGMA index_info({idx_name});")
+                for idxinfo in cursor.fetchall():
+                    indexed_cols.add(idxinfo[2])
+            # Add PK columns as indexed
+            for col in self.tables[table_name]['columns']:
+                if col['pk']:
+                    indexed_cols.add(col['name'])
+            self.indexed_columns[table_name] = indexed_cols
         
         conn.close()
         
@@ -267,6 +297,12 @@ class DatabaseMapper:
             # Process columns
             columns = []
             for col_def in column_defs:
+                col_def = col_def.strip()
+                # Remove any trailing ')' or ';' from the last column
+                col_def = col_def.rstrip('); \n\t')
+                # Skip table-level constraints
+                if col_def.upper().startswith(('FOREIGN KEY', 'PRIMARY KEY', 'UNIQUE', 'CHECK')):
+                    continue
                 col_info = self._extract_column_info(col_def)
                 if col_info:
                     columns.append(col_info)
@@ -288,9 +324,35 @@ class DatabaseMapper:
     
     def generate_diagram(self, output_path: str = 'database_diagram') -> None:
         """Generate a compact, clustered, and relational-only diagram of the database structure."""
-        dot = Digraph(comment='Database Schema')
-        dot.attr(rankdir='LR', nodesep='0.6', ranksep='0.7')  # More readable spacing
-
+        dot = Digraph(comment='Database Schema', engine=self.engine)
+        dot.attr(charset='UTF-8')
+        
+        # Use user-specified or default spacing, divide by 10, min 0.1
+        nodesep_val = max(int(self.nodesep), 1) / 10
+        ranksep_val = max(int(self.ranksep), 1) / 10
+        nodesep = str(nodesep_val)
+        ranksep = str(ranksep_val)
+        
+        # Adjust spacing based on compact mode
+        if self.compact_mode:
+            dot.attr(rankdir=self.layout, nodesep=nodesep, ranksep=ranksep, splines='true')
+            dot.attr(compound='true')
+            dot.attr('node', margin='0.2')
+            dot.attr('edge', minlen='1')
+        else:
+            dot.attr(rankdir=self.layout, nodesep=nodesep, ranksep=ranksep)
+        
+        # Set overlap if specified (especially useful for neato/fdp)
+        if self.overlap:
+            dot.attr(overlap=self.overlap)
+        
+        # Set font size and DPI
+        fontsize = str(self.font_size)
+        dot.attr('node', fontsize=fontsize)
+        dot.attr('edge', fontsize=fontsize)
+        dot.attr('graph', fontsize=fontsize)
+        dot.attr(dpi=str(self.dpi))
+        
         fontname = getattr(self, 'diagram_font', 'Consolas')
 
         if getattr(self, 'dark_mode', False):
@@ -322,15 +384,35 @@ class DatabaseMapper:
         def is_relational(col):
             return col['pk'] or re.search(r'_id$|_ID$|_Id$|ID$|Id$|Key$|_key$', col['name'])
 
+        # Calculate incoming connection counts for each table
+        incoming_counts = {table: 0 for table in self.tables}
+        for _, to_table, _ in self.relationships:
+            if to_table in incoming_counts:
+                incoming_counts[to_table] += 1
+
+        # Sort clusters and tables by incoming connection count if enabled
+        def sort_key(table):
+            return -incoming_counts.get(table, 0), table  # Descending by incoming, then name
+        
+        # Sort clusters by the highest incoming count of any table in the cluster
+        cluster_items = list(clusters.items())
+        if self.sort_by_incoming:
+            cluster_items.sort(key=lambda item: max([incoming_counts.get(t, 0) for t in item[1]]), reverse=True)
+        
         # Add clusters (subgraphs) only if more than one table in group
         clustered_tables = set()
-        for prefix, table_names in clusters.items():
+        for prefix, table_names in cluster_items:
             if len(table_names) > 1:
+                # Sort tables in cluster if enabled
+                if self.sort_by_incoming:
+                    table_names = sorted(table_names, key=sort_key)
                 with dot.subgraph(name=f'cluster_{prefix}') as c:
                     if getattr(self, 'dark_mode', False):
                         c.attr(label=prefix.upper(), style='dashed', color='#cccccc', fontcolor='#cccccc', fontname=fontname)
                     else:
                         c.attr(label=prefix.upper(), style='dashed', fontname=fontname)
+                    if self.compact_mode:
+                        c.attr(margin='0.2')
                     for table_name in table_names:
                         table_info = self.tables[table_name]
                         if getattr(self, 'full_mode', False):
@@ -340,10 +422,14 @@ class DatabaseMapper:
                             show_cols = [col for col in table_info['columns'] if is_relational(col)]
                             table_label = table_name
                         label = f'''<
-<TABLE BORDER="1" CELLBORDER="0" CELLSPACING="0" CELLPADDING="6">
+<TABLE BORDER="1" CELLBORDER="0" CELLSPACING="0" CELLPADDING="4">
   <TR><TD WIDTH="120"><U><B>{table_label}</B></U></TD></TR>'''
                         for col in show_cols:
-                            label += f'  <TR><TD ALIGN="LEFT">{col["name"]} ({col["type"]})'
+                            col_display = col["name"]
+                            # Show index marker if enabled and column is indexed
+                            if self.show_indexes and table_name in self.indexed_columns and col["name"] in self.indexed_columns[table_name]:
+                                col_display += ' [i]'
+                            label += f'  <TR><TD ALIGN="LEFT">{col_display} ({col["type"]})'
                             if col['pk']:
                                 label += ' <B>[PK]</B>'
                             label += '</TD></TR>'
@@ -354,36 +440,55 @@ class DatabaseMapper:
                         c.node(table_name, label=label, **node_kwargs)
                         clustered_tables.add(table_name)
         # Add non-clustered tables
-        for table_name in self.tables:
-            if table_name not in clustered_tables:
-                table_info = self.tables[table_name]
-                if getattr(self, 'full_mode', False):
-                    show_cols = table_info['columns']
-                    table_label = table_name
-                else:
-                    show_cols = [col for col in table_info['columns'] if is_relational(col)]
-                    table_label = table_name
-                label = f'''<
-<TABLE BORDER="1" CELLBORDER="0" CELLSPACING="0" CELLPADDING="6">
+        non_clustered = [t for t in self.tables if t not in clustered_tables]
+        if self.sort_by_incoming:
+            non_clustered = sorted(non_clustered, key=sort_key)
+        for table_name in non_clustered:
+            table_info = self.tables[table_name]
+            if getattr(self, 'full_mode', False):
+                show_cols = table_info['columns']
+                table_label = table_name
+            else:
+                show_cols = [col for col in table_info['columns'] if is_relational(col)]
+                table_label = table_name
+            label = f'''<
+<TABLE BORDER="1" CELLBORDER="0" CELLSPACING="0" CELLPADDING="4">
   <TR><TD WIDTH="120"><U><B>{table_label}</B></U></TD></TR>'''
-                for col in show_cols:
-                    label += f'  <TR><TD ALIGN="LEFT">{col["name"]} ({col["type"]})'
-                    if col['pk']:
-                        label += ' <B>[PK]</B>'
-                    label += '</TD></TR>'
-                label += '</TABLE>>'
-                node_kwargs = dict(shape='plaintext', width='1.5', fontcolor=table_colors[table_name], fontname=fontname)
-                if getattr(self, 'dark_mode', False):
-                    node_kwargs['color'] = '#eeeeee'
-                dot.node(table_name, label=label, **node_kwargs)
+            for col in show_cols:
+                col_display = col["name"]
+                if self.show_indexes and table_name in self.indexed_columns and col["name"] in self.indexed_columns[table_name]:
+                    col_display += ' [i]'
+                label += f'  <TR><TD ALIGN="LEFT">{col_display} ({col["type"]})'
+                if col['pk']:
+                    label += ' <B>[PK]</B>'
+                label += '</TD></TR>'
+            label += '</TABLE>>'
+            node_kwargs = dict(shape='plaintext', width='1.5', fontcolor=table_colors[table_name], fontname=fontname)
+            if getattr(self, 'dark_mode', False):
+                node_kwargs['color'] = '#eeeeee'
+            dot.node(table_name, label=label, **node_kwargs)
 
         # Add relationships
         for table1, table2, rel_type in self.relationships:
             edge_color = table_colors.get(table1, fontcolor)
-            if self.assume_relationships and (table1, table2, rel_type) not in self.explicit_relationships:
-                dot.edge(table1, table2, label=rel_type, style='dashed', color=edge_color, fontcolor=edge_color)
+            # Use HTML-like labels for bold/italic
+            if self.assume_relationships:
+                if (table1, table2, rel_type) in self.explicit_relationships:
+                    label_html = f'<B>{rel_type}</B>'
+                else:
+                    label_html = f'<I>{rel_type}</I>'
+                if (table1, table2, rel_type) not in self.explicit_relationships:
+                    dot.edge(table1, table2, label=label_html, style='dashed', color=edge_color, fontcolor=edge_color)
+                else:
+                    dot.edge(table1, table2, label=label_html, color=edge_color, fontcolor=edge_color)
             else:
                 dot.edge(table1, table2, label=rel_type, color=edge_color, fontcolor=edge_color)
+            # If referenced table does not exist, add a node for it
+            if table2 not in self.tables:
+                if getattr(self, 'dark_mode', False):
+                    dot.node(table2, table2, shape='circle', style='filled', fillcolor='#eeeeee', fontcolor='#222222', fontname=fontname)
+                else:
+                    dot.node(table2, table2, shape='circle', style='filled', fillcolor='black', fontcolor='white', fontname=fontname)
 
         # Set edge style based on arrow_type
         arrow_type = getattr(self, 'arrow_type', 'curved')
@@ -398,6 +503,77 @@ class DatabaseMapper:
 
         # Save diagram
         dot.render(output_path, format='png', cleanup=True)
+
+    def _suggest_indexes(self) -> Tuple[Dict[str, List[str]], Dict[str, List[str]]]:
+        """Suggest indexes for tables based on column characteristics.
+        Returns a tuple of (definite_indexes, possible_indexes) where each is a dict of table_name -> list of index statements."""
+        definite_indexes = {}
+        possible_indexes = {}
+        
+        for table_name, table_info in self.tables.items():
+            # Skip sqlite_sequence table
+            if table_name == 'sqlite_sequence':
+                continue
+                
+            definite = []
+            possible = []
+            
+            # Get all columns
+            columns = table_info['columns']
+            
+            # Find primary key column
+            pk_col = next((col['name'] for col in columns if col['pk']), None)
+            
+            # Find foreign key columns
+            fk_cols = []
+            for rel in self.relationships:
+                if rel[0] == table_name:  # This table is the child
+                    # Extract just the column name from the relationship label
+                    fk_col = rel[2].split('→')[0].strip()
+                    fk_cols.append(fk_col)
+            
+            # Definite indexes:
+            # 1. Foreign key columns (if not already indexed)
+            for fk_col in fk_cols:
+                if fk_col != pk_col:  # Don't index if it's already the PK
+                    definite.append(f"CREATE INDEX IF NOT EXISTS idx_{table_name}_{fk_col} ON {table_name}({fk_col});")
+            
+            # 2. Columns that are frequently used in WHERE clauses (based on naming)
+            where_patterns = [
+                r'status$', r'type$', r'category$', r'is_', r'has_', r'active$',
+                r'date$', r'created$', r'updated$', r'deleted$', r'name$'
+            ]
+            for col in columns:
+                col_name = col['name'].lower()
+                if any(re.search(pattern, col_name) for pattern in where_patterns):
+                    if col_name != pk_col and col_name not in fk_cols:
+                        definite.append(f"CREATE INDEX IF NOT EXISTS idx_{table_name}_{col['name']} ON {table_name}({col['name']});")
+            
+            # Possible indexes:
+            # 1. Columns that might be used in WHERE clauses (based on type)
+            for col in columns:
+                col_name = col['name'].lower()
+                col_type = col['type'].upper()
+                
+                # Skip if already in definite indexes or is PK
+                if col_name == pk_col or col_name in fk_cols:
+                    continue
+                
+                # Suggest indexes for columns that might be used in filtering
+                if col_type in ('INTEGER', 'BOOLEAN', 'DATE', 'DATETIME', 'TIMESTAMP'):
+                    possible.append(f"CREATE INDEX IF NOT EXISTS idx_{table_name}_{col['name']} ON {table_name}({col['name']});")
+                
+                # Suggest indexes for columns that might be used in sorting
+                if col_type in ('TEXT', 'VARCHAR', 'CHAR', 'INTEGER', 'DATE', 'DATETIME', 'TIMESTAMP'):
+                    if 'name' in col_name or 'title' in col_name or 'code' in col_name:
+                        possible.append(f"CREATE INDEX IF NOT EXISTS idx_{table_name}_{col['name']} ON {table_name}({col['name']});")
+            
+            if definite:
+                definite_indexes[table_name] = definite
+            if possible:
+                possible_indexes[table_name] = possible
+        
+        return definite_indexes, possible_indexes
 
 def get_table_color(table_name, dark_mode=False):
     palette = BRIGHT_COLORS_DARK if dark_mode else BRIGHT_COLORS_LIGHT
@@ -418,11 +594,46 @@ def main():
     parser.add_argument('--dark', '-d', action='store_true', help='Use a dark background and light foreground')
     parser.add_argument('--full', '-f', action='store_true', help='Show all columns and increase spacing between tables')
     parser.add_argument('--font', type=str, default='Consolas', help='Font to use for diagram (e.g., Arial, Helvetica, Consolas, Courier, Times, Verdana, Tahoma, Trebuchet MS, Georgia, Palatino, Impact, Comic Sans MS)')
+    parser.add_argument('--font-size', type=int, default=12, help='Font size for all diagram text (default: 12). Increase for larger text, decrease for smaller.')
+    parser.add_argument('--dpi', type=int, default=96, help='Image resolution in DPI (default: 96). Increase for higher quality PNG output.')
     parser.add_argument('--arrow-type', '-t', type=str, default='curved', choices=['curved', 'polyline', 'ortho'], help='Arrow style: curved (default), polyline (straight lines), or ortho (straight lines with right angles)')
+    parser.add_argument('--layout', '-l', type=str, default='LR', choices=['LR', 'RL', 'TB', 'BT'], help='Diagram layout direction: LR (left-to-right, default), RL (right-to-left), TB (top-to-bottom), BT (bottom-to-top)')
+    parser.add_argument('--compact', action='store_true', help='Use compact layout with reduced spacing and better space utilization')
+    parser.add_argument('--engine', type=str, default='dot', choices=['dot', 'neato', 'fdp', 'sfdp', 'twopi', 'circo'], help='Graphviz layout engine (dot, neato, fdp, sfdp, twopi, circo)')
+    parser.add_argument('--nodesep', type=int, default=6, help='Minimum space between nodes (integer, default: 6 for 0.6). Enter 8 for 0.8, 15 for 1.5, etc. Anything below 1 is treated as 1 (0.1). Especially useful for force-directed engines like neato/fdp.')
+    parser.add_argument('--ranksep', type=int, default=7, help='Minimum space between rows/columns (integer, default: 7 for 0.7). Enter 10 for 1.0, 15 for 1.5, etc. Anything below 1 is treated as 1 (0.1). Especially useful for force-directed engines.')
+    parser.add_argument('--overlap', type=str, default=None, help='Node overlap handling (e.g., false, scale, prism). Especially useful for neato/fdp to prevent node overlap.')
+    parser.add_argument('--sort-by-incoming', action='store_true', help='Sort tables by number of incoming connections (off by default). Enable for more central placement of referenced tables.')
     parser.add_argument('--create-keys', action='store_true', help='Print SQL statements to create assumed foreign keys and exit')
     parser.add_argument('--create-sqlite-keys', action='store_true', help='Print assumed FOREIGN KEY clauses for each table (for SQLite CREATE TABLE) and exit')
+    parser.add_argument('--create-indexes', action='store_true', help='Print suggested CREATE INDEX statements and exit')
+    parser.add_argument('--show-indexes', action='store_true', help='Show an ⓘ symbol after columns that are indexed (PK or have an explicit index)')
 
     args = parser.parse_args()
+    
+    if args.create_indexes:
+        # Only do index creation logic, ignore all other flags
+        mapper = DatabaseMapper(assume_relationships=True)
+        if args.input_file.endswith('.db') or args.input_file.endswith('.sqlite') or args.input_file.endswith('.sqlite3'):
+            mapper.parse_sqlite_db(args.input_file)
+        else:
+            mapper.parse_sql_file(args.input_file)
+        
+        definite_indexes, possible_indexes = mapper._suggest_indexes()
+        
+        print("Definite indexes:")
+        for table_name, indexes in definite_indexes.items():
+            print(f"\n  {table_name}:")
+            for idx in indexes:
+                print(f"    {idx}")
+        
+        print("\nPossible indexes:")
+        for table_name, indexes in possible_indexes.items():
+            print(f"\n  {table_name}:")
+            for idx in indexes:
+                print(f"    {idx}")
+        
+        exit(0)
     
     if args.create_keys:
         # Only do key creation logic, ignore all other flags
@@ -473,7 +684,17 @@ def main():
     mapper.dark_mode = args.dark
     mapper.full_mode = args.full
     mapper.diagram_font = args.font
+    mapper.font_size = args.font_size
+    mapper.dpi = args.dpi
     mapper.arrow_type = args.arrow_type
+    mapper.layout = args.layout
+    mapper.compact_mode = args.compact
+    mapper.engine = args.engine
+    mapper.nodesep = args.nodesep
+    mapper.ranksep = args.ranksep
+    mapper.overlap = args.overlap
+    mapper.sort_by_incoming = args.sort_by_incoming
+    mapper.show_indexes = args.show_indexes
     
     if args.input_file.endswith('.db') or args.input_file.endswith('.sqlite') or args.input_file.endswith('.sqlite3'):
         mapper.parse_sqlite_db(args.input_file)
