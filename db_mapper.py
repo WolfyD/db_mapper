@@ -7,6 +7,9 @@ import subprocess
 from graphviz import Digraph
 from typing import Union, Dict, List, Tuple
 import hashlib
+from InquirerPy import prompt
+from InquirerPy.base.control import Choice
+from InquirerPy.validator import PathValidator
 
 BRIGHT_COLORS_LIGHT = [
     '#E63946', '#F4A261', '#2A9D8F', '#264653', '#6A4C93',
@@ -216,7 +219,14 @@ class DatabaseMapper:
         if self.assume_relationships:
             assumed = self._find_potential_relationships()
             for rel in assumed:
-                if rel not in self.relationships:
+                # rel = (child, parent, label)
+                # Only add if not already present as an explicit relationship for the same child, parent, and child column
+                child_col = rel[2].split('→')[0].strip()
+                already_explicit = any(
+                    rel[0] == exp[0] and rel[1] == exp[1] and child_col == exp[2].split('→')[0].strip()
+                    for exp in self.explicit_relationships
+                )
+                if not already_explicit and rel not in self.relationships:
                     self.relationships.append(rel)
     
     def _extract_column_info(self, column_def: str) -> Dict:
@@ -319,7 +329,14 @@ class DatabaseMapper:
         if self.assume_relationships:
             assumed = self._find_potential_relationships()
             for rel in assumed:
-                if rel not in self.relationships:
+                # rel = (child, parent, label)
+                # Only add if not already present as an explicit relationship for the same child, parent, and child column
+                child_col = rel[2].split('→')[0].strip()
+                already_explicit = any(
+                    rel[0] == exp[0] and rel[1] == exp[1] and child_col == exp[2].split('→')[0].strip()
+                    for exp in self.explicit_relationships
+                )
+                if not already_explicit and rel not in self.relationships:
                     self.relationships.append(rel)
     
     def generate_diagram(self, output_path: str = 'database_diagram') -> None:
@@ -474,9 +491,9 @@ class DatabaseMapper:
             # Use HTML-like labels for bold/italic
             if self.assume_relationships:
                 if (table1, table2, rel_type) in self.explicit_relationships:
-                    label_html = f'<B>{rel_type}</B>'
+                    label_html = f'<<B>{rel_type}</B>>'
                 else:
-                    label_html = f'<I>{rel_type}</I>'
+                    label_html = f'<<I>{rel_type}</I>>'
                 if (table1, table2, rel_type) not in self.explicit_relationships:
                     dot.edge(table1, table2, label=label_html, style='dashed', color=edge_color, fontcolor=edge_color)
                 else:
@@ -580,6 +597,449 @@ def get_table_color(table_name, dark_mode=False):
     idx = int(hashlib.md5(table_name.encode()).hexdigest(), 16) % len(palette)
     return palette[idx]
 
+def show_help():
+    """Display detailed help information about all options."""
+    help_text = """
+Database Mapper Help
+===================
+
+Main Actions:
+-------------
+1. Generate database diagram
+   Creates a visual representation of your database schema
+   - Shows tables, columns, and relationships
+   - Supports various layout engines and styles
+   - Can show assumed relationships based on naming patterns
+
+2. Generate SQL for missing foreign keys
+   Creates ALTER TABLE statements for assumed relationships
+   - Wraps statements in a transaction
+   - Names constraints automatically
+   - Only includes relationships not already defined
+
+3. Generate SQLite FOREIGN KEY clauses
+   Creates FOREIGN KEY clauses for CREATE TABLE statements
+   - Groups by table
+   - Includes proper comma separation
+   - Ready to paste into CREATE TABLE statements
+
+4. Generate suggested indexes
+   Suggests indexes based on column characteristics
+   - Definite indexes: foreign keys and common filter columns
+   - Possible indexes: columns likely to be used in WHERE/ORDER BY
+   - Includes index names and table references
+
+5. Generate suggested triggers
+   Suggests useful triggers for your tables
+   - Audit triggers for change tracking
+   - Validation triggers for data integrity
+   - Auto-update triggers for timestamps
+   - Soft delete triggers
+   - Referential integrity triggers
+
+Diagram Options:
+--------------
+1. Basic Options:
+   - Assume relationships: Detect relationships based on column naming patterns
+   - Use colors: Assign unique colors to tables and their relationships
+   - Dark mode: Use dark background with light text
+   - Show all columns: Display non-relational columns too
+   - Show indexed columns: Mark columns that are indexed
+   - Sort by incoming: Place referenced tables more centrally
+   - Compact layout: Reduce spacing between elements
+
+2. Layout Direction:
+   - Left to Right (LR): Traditional horizontal layout
+   - Right to Left (RL): Reverse horizontal layout
+   - Top to Bottom (TB): Traditional vertical layout
+   - Bottom to Top (BT): Reverse vertical layout
+
+3. Layout Engines:
+   - Dot (hierarchical): Best for most diagrams, supports all arrow styles
+   - Neato (force-directed): Good for small to medium graphs
+   - FDP (force-directed): Good for large graphs
+   - SFDP (force-directed): Best for very large graphs
+   - Twopi (radial): Good for hierarchical data
+   - Circo (circular): Good for cyclic structures
+
+4. Arrow Styles:
+   - Curved: Works with all engines
+   - Straight lines: Only works with dot engine
+   - Right-angled: Only works with dot engine
+
+5. Advanced Options:
+   - Node separation: Space between nodes (especially for force-directed engines)
+   - Rank separation: Space between rows/columns (especially for force-directed engines)
+   - Font size: Size of all text in the diagram
+   - DPI: Image resolution (higher = better quality)
+   - Overlap handling: Controls how nodes avoid overlapping
+     * false: No overlap allowed
+     * scale: Reduce overlap by scaling
+     * prism: Force-directed overlap removal
+     * compress: Reduce size to avoid overlap
+     * vpsc: Variable overlap removal
+     * ortho/orthoxy/ortho_yx: Orthogonal layouts
+     * pcompress: Parallel compression
+     * ipsep: Incremental separation
+     * sep/sep+: Separation methods
+     * true: Allow overlap
+
+Tips:
+-----
+1. For large databases:
+   - Use SFDP engine
+   - Enable compact layout
+   - Use overlap handling
+   - Consider showing only relational columns
+
+2. For better readability:
+   - Use dark mode for light backgrounds
+   - Increase font size
+   - Use higher DPI for better quality
+   - Enable colors for better distinction
+
+3. For force-directed layouts:
+   - Adjust node and rank separation
+   - Use appropriate overlap handling
+   - Consider using curved arrows
+
+4. For hierarchical data:
+   - Use dot engine with TB layout
+   - Consider using ortho arrows
+   - Enable sort by incoming connections
+"""
+    print(help_text)
+    input("\nPress Enter to continue...")
+
+def interactive_menu(args):
+    """Handle interactive menu mode."""
+    try:
+        # First, get the input file if not provided
+        if not args.input_file:
+            input_question = [
+                {
+                    "type": "filepath",
+                    "message": "Select database or SQL file:",
+                    "name": "input_file",
+                    "validate": PathValidator(is_file=True, message="Input is not a file"),
+                    "only_files": True,
+                    "filter": lambda x: x.strip('"')
+                }
+            ]
+            input_answer = prompt(input_question)
+            if not input_answer:
+                print("\nOperation cancelled.")
+                sys.exit(0)
+            args.input_file = input_answer["input_file"]
+
+        # Main action menu
+        main_questions = [
+            {
+                "type": "list",
+                "message": "Select action:",
+                "name": "action",
+                "choices": [
+                    Choice("diagram", "Generate database diagram"),
+                    Choice("create_keys", "Generate SQL for missing foreign keys"),
+                    Choice("create_sqlite_keys", "Generate SQLite FOREIGN KEY clauses"),
+                    Choice("create_indexes", "Generate suggested indexes"),
+                    Choice("create_triggers", "Generate suggested triggers"),
+                    Choice("help", "Show detailed help"),
+                    Choice("cancel", "Cancel and exit")
+                ]
+            }
+        ]
+        main_answer = prompt(main_questions)
+        if not main_answer or main_answer["action"] == "cancel":
+            print("\nOperation cancelled.")
+            sys.exit(0)
+
+        # Handle different actions
+        if main_answer["action"] == "help":
+            show_help()
+            # After showing help, show the menu again
+            interactive_menu(args)
+        elif main_answer["action"] == "diagram":
+            diagram_menu(args)
+        elif main_answer["action"] == "create_keys":
+            args.create_keys = True
+        elif main_answer["action"] == "create_sqlite_keys":
+            args.create_sqlite_keys = True
+        elif main_answer["action"] == "create_indexes":
+            args.create_indexes = True
+        elif main_answer["action"] == "create_triggers":
+            trigger_menu(args)
+    except KeyboardInterrupt:
+        print("\nOperation cancelled.")
+        sys.exit(0)
+    except Exception as e:
+        print(f"\nAn error occurred: {str(e)}")
+        sys.exit(1)
+
+def diagram_menu(args):
+    """Interactive menu for diagram generation options."""
+    try:
+        # Basic options
+        basic_questions = [
+            {
+                "type": "checkbox",
+                "message": "Select diagram options:",
+                "name": "options",
+                "choices": [
+                    Choice("assume", "Assume relationships based on column naming"),
+                    Choice("color", "Use colors for tables and relationships"),
+                    Choice("dark", "Use dark mode"),
+                    Choice("full", "Show all columns"),
+                    Choice("show_indexes", "Show indexed columns"),
+                    Choice("sort_by_incoming", "Sort tables by incoming connections"),
+                    Choice("compact", "Use compact layout")
+                ]
+            },
+            {
+                "type": "list",
+                "message": "Select layout direction:",
+                "name": "layout",
+                "choices": [
+                    Choice("LR", "Left to Right"),
+                    Choice("RL", "Right to Left"),
+                    Choice("TB", "Top to Bottom"),
+                    Choice("BT", "Bottom to Top"),
+                    Choice("cancel", "Cancel and exit")
+                ]
+            }
+        ]
+        basic_answers = prompt(basic_questions)
+        if not basic_answers or basic_answers["layout"] == "cancel":
+            print("\nOperation cancelled.")
+            sys.exit(0)
+
+        # Apply basic options
+        for option in basic_answers["options"]:
+            setattr(args, option, True)
+        args.layout = basic_answers["layout"]
+
+        # Engine selection
+        engine_question = [
+            {
+                "type": "list",
+                "message": "Select layout engine:",
+                "name": "engine",
+                "choices": [
+                    Choice("dot", "Dot (hierarchical, best for most diagrams)"),
+                    Choice("neato", "Neato (force-directed, good for small to medium graphs)"),
+                    Choice("fdp", "FDP (force-directed, good for large graphs)"),
+                    Choice("sfdp", "SFDP (force-directed, best for very large graphs)"),
+                    Choice("twopi", "Twopi (radial, good for hierarchical data)"),
+                    Choice("circo", "Circo (circular, good for cyclic structures)"),
+                    Choice("cancel", "Cancel and exit")
+                ]
+            }
+        ]
+        engine_answer = prompt(engine_question)
+        if not engine_answer or engine_answer["engine"] == "cancel":
+            print("\nOperation cancelled.")
+            sys.exit(0)
+        args.engine = engine_answer["engine"]
+
+        # Arrow style
+        arrow_question = [
+            {
+                "type": "list",
+                "message": "Select arrow style:",
+                "name": "arrow_type",
+                "choices": [
+                    Choice("curved", "Curved (works with all engines)"),
+                    Choice("polyline", "Straight lines (dot engine only)"),
+                    Choice("ortho", "Right-angled (dot engine only)"),
+                    Choice("cancel", "Cancel and exit")
+                ]
+            }
+        ]
+        arrow_answer = prompt(arrow_question)
+        if not arrow_answer or arrow_answer["arrow_type"] == "cancel":
+            print("\nOperation cancelled.")
+            sys.exit(0)
+        args.arrow_type = arrow_answer["arrow_type"]
+
+        # Font selection
+        font_question = [
+            {
+                "type": "list",
+                "message": "Select font:",
+                "name": "font",
+                "choices": [
+                    "Arial", "Helvetica", "Consolas", "Courier", "Times",
+                    "Verdana", "Tahoma", "Trebuchet MS", "Georgia",
+                    "Palatino", "Impact", "Comic Sans MS",
+                    "cancel"
+                ]
+            }
+        ]
+        font_answer = prompt(font_question)
+        if not font_answer or font_answer["font"] == "cancel":
+            print("\nOperation cancelled.")
+            sys.exit(0)
+        args.font = font_answer["font"]
+
+        # Advanced options
+        advanced_questions = [
+            {
+                "type": "input",
+                "message": "Node separation (default: 0.6, especially useful for force-directed engines):",
+                "name": "nodesep",
+                "default": "6",
+                "validate": lambda x: x.isdigit() and int(x) > 0
+            },
+            {
+                "type": "input",
+                "message": "Rank separation (default: 0.7, especially useful for force-directed engines):",
+                "name": "ranksep",
+                "default": "7",
+                "validate": lambda x: x.isdigit() and int(x) > 0
+            },
+            {
+                "type": "input",
+                "message": "Font size (default: 12):",
+                "name": "font_size",
+                "default": "12",
+                "validate": lambda x: x.isdigit() and int(x) > 0
+            },
+            {
+                "type": "input",
+                "message": "DPI (default: 96):",
+                "name": "dpi",
+                "default": "96",
+                "validate": lambda x: x.isdigit() and int(x) > 0
+            },
+            {
+                "type": "list",
+                "message": "Node overlap handling (especially useful for neato/fdp/sfdp):",
+                "name": "overlap",
+                "choices": [
+                    Choice(None, "None (default)"),
+                    Choice("false", "False (no overlap)"),
+                    Choice("scale", "Scale (reduce overlap)"),
+                    Choice("prism", "Prism (force-directed overlap removal)"),
+                    Choice("compress", "Compress (reduce size)"),
+                    Choice("vpsc", "VPSC (variable overlap removal)"),
+                    Choice("ortho", "Ortho (orthogonal layout)"),
+                    Choice("orthoxy", "OrthoXY (orthogonal layout with XY constraints)"),
+                    Choice("ortho_yx", "OrthoYX (orthogonal layout with YX constraints)"),
+                    Choice("pcompress", "PCompress (parallel compression)"),
+                    Choice("ipsep", "IPSep (incremental separation)"),
+                    Choice("sep", "Sep (separation)"),
+                    Choice("sep+", "Sep+ (enhanced separation)"),
+                    Choice("true", "True (allow overlap)"),
+                    Choice("cancel", "Cancel and exit")
+                ]
+            }
+        ]
+        advanced_answers = prompt(advanced_questions)
+        if not advanced_answers or advanced_answers["overlap"] == "cancel":
+            print("\nOperation cancelled.")
+            sys.exit(0)
+
+        # Apply advanced options
+        args.nodesep = int(advanced_answers["nodesep"])
+        args.ranksep = int(advanced_answers["ranksep"])
+        args.font_size = int(advanced_answers["font_size"])
+        args.dpi = int(advanced_answers["dpi"])
+        args.overlap = advanced_answers["overlap"]
+
+        # Output file
+        output_question = [
+            {
+                "type": "input",
+                "message": "Output filename (without extension):",
+                "name": "output",
+                "default": "database_diagram"
+            }
+        ]
+        output_answer = prompt(output_question)
+        if not output_answer:
+            print("\nOperation cancelled.")
+            sys.exit(0)
+        args.output = output_answer["output"]
+    except KeyboardInterrupt:
+        print("\nOperation cancelled.")
+        sys.exit(0)
+    except Exception as e:
+        print(f"\nAn error occurred: {str(e)}")
+        sys.exit(1)
+
+def trigger_menu(args):
+    """Interactive menu for trigger generation options."""
+    try:
+        # First, parse the database/sql file to get table information
+        mapper = DatabaseMapper(assume_relationships=True)
+        if args.input_file.endswith(('.db', '.sqlite', '.sqlite3')):
+            mapper.parse_sqlite_db(args.input_file)
+        else:
+            mapper.parse_sql_file(args.input_file)
+
+        # Get available tables
+        tables = list(mapper.tables.keys())
+        
+        # Trigger type selection
+        trigger_questions = [
+            {
+                "type": "checkbox",
+                "message": "Select trigger types to generate:",
+                "name": "trigger_types",
+                "choices": [
+                    Choice("audit", "Audit triggers (track changes)"),
+                    Choice("validation", "Validation triggers (email, phone)"),
+                    Choice("auto_update", "Auto-update triggers (timestamps)"),
+                    Choice("soft_delete", "Soft delete triggers"),
+                    Choice("referential", "Referential integrity triggers"),
+                    Choice("cancel", "Cancel and exit")
+                ]
+            },
+            {
+                "type": "checkbox",
+                "message": "Select tables to generate triggers for:",
+                "name": "selected_tables",
+                "choices": [Choice("all", "All tables")] + [Choice(t, t) for t in tables] + [Choice("cancel", "Cancel and exit")]
+            }
+        ]
+        trigger_answers = prompt(trigger_questions)
+        if not trigger_answers or "cancel" in trigger_answers["trigger_types"] or "cancel" in trigger_answers["selected_tables"]:
+            print("\nOperation cancelled.")
+            sys.exit(0)
+
+        # Process selections
+        selected_types = [t for t in trigger_answers["trigger_types"] if t != "cancel"]
+        selected_tables = [t for t in trigger_answers["selected_tables"] if t not in ["cancel", "all"]]
+        
+        if "all" in trigger_answers["selected_tables"]:
+            selected_tables = tables
+
+        # Generate and print triggers
+        suggested_triggers = mapper._suggest_triggers()
+        
+        print("\nSuggested Triggers:")
+        for table_name, triggers in suggested_triggers.items():
+            if table_name not in selected_tables:
+                continue
+                
+            print(f"\n  {table_name}:")
+            # Group triggers by type
+            by_type = {}
+            for trigger_type, trigger_sql in triggers:
+                if trigger_type in selected_types:
+                    by_type.setdefault(trigger_type, []).append(trigger_sql)
+            
+            for trigger_type, trigger_list in by_type.items():
+                print(f"\n    {trigger_type.upper()} Triggers:")
+                for trigger in trigger_list:
+                    print(f"      {trigger}")
+    except KeyboardInterrupt:
+        print("\nOperation cancelled.")
+        sys.exit(0)
+    except Exception as e:
+        print(f"\nAn error occurred: {str(e)}")
+        sys.exit(1)
+
 def main():
     import argparse
     
@@ -587,34 +1047,60 @@ def main():
     check_graphviz_installation()
     
     parser = argparse.ArgumentParser(description='Generate database schema diagrams from SQLite DB or SQL files')
-    parser.add_argument('input_file', help='Path to SQLite database or SQL file')
+    parser.add_argument('input_file', nargs='?', help='Path to SQLite database or SQL file')
+    parser.add_argument('--interactive', '-i', action='store_true', help='Launch an interactive menu to select actions and options')
     parser.add_argument('--output', '-o', default='database_diagram', help='Output file name (without extension)')
     parser.add_argument('--assume', '-a', action='store_true', help='Assume relationships based on column naming patterns')
     parser.add_argument('--color', '-c', action='store_true', help='Assign a unique color to each table and its outgoing arrows')
     parser.add_argument('--dark', '-d', action='store_true', help='Use a dark background and light foreground')
     parser.add_argument('--full', '-f', action='store_true', help='Show all columns and increase spacing between tables')
-    parser.add_argument('--font', type=str, default='Consolas', help='Font to use for diagram (e.g., Arial, Helvetica, Consolas, Courier, Times, Verdana, Tahoma, Trebuchet MS, Georgia, Palatino, Impact, Comic Sans MS)')
-    parser.add_argument('--font-size', type=int, default=12, help='Font size for all diagram text (default: 12). Increase for larger text, decrease for smaller.')
-    parser.add_argument('--dpi', type=int, default=96, help='Image resolution in DPI (default: 96). Increase for higher quality PNG output.')
-    parser.add_argument('--arrow-type', '-t', type=str, default='curved', choices=['curved', 'polyline', 'ortho'], help='Arrow style: curved (default), polyline (straight lines), or ortho (straight lines with right angles)')
-    parser.add_argument('--layout', '-l', type=str, default='LR', choices=['LR', 'RL', 'TB', 'BT'], help='Diagram layout direction: LR (left-to-right, default), RL (right-to-left), TB (top-to-bottom), BT (bottom-to-top)')
-    parser.add_argument('--compact', action='store_true', help='Use compact layout with reduced spacing and better space utilization')
-    parser.add_argument('--engine', type=str, default='dot', choices=['dot', 'neato', 'fdp', 'sfdp', 'twopi', 'circo'], help='Graphviz layout engine (dot, neato, fdp, sfdp, twopi, circo)')
-    parser.add_argument('--nodesep', type=int, default=6, help='Minimum space between nodes (integer, default: 6 for 0.6). Enter 8 for 0.8, 15 for 1.5, etc. Anything below 1 is treated as 1 (0.1). Especially useful for force-directed engines like neato/fdp.')
-    parser.add_argument('--ranksep', type=int, default=7, help='Minimum space between rows/columns (integer, default: 7 for 0.7). Enter 10 for 1.0, 15 for 1.5, etc. Anything below 1 is treated as 1 (0.1). Especially useful for force-directed engines.')
-    parser.add_argument('--overlap', type=str, default=None, help='Node overlap handling (e.g., false, scale, prism). Especially useful for neato/fdp to prevent node overlap.')
-    parser.add_argument('--sort-by-incoming', action='store_true', help='Sort tables by number of incoming connections (off by default). Enable for more central placement of referenced tables.')
+    parser.add_argument('--font', type=str, default='Consolas', help='Font to use for diagram')
+    parser.add_argument('--font-size', type=int, default=12, help='Font size for all diagram text')
+    parser.add_argument('--dpi', type=int, default=96, help='Image resolution in DPI')
+    parser.add_argument('--arrow-type', '-t', type=str, default='curved', 
+        choices=['curved', 'polyline', 'ortho'],
+        help='Arrow style: curved (all engines), polyline/ortho (dot engine only)')
+    parser.add_argument('--layout', '-l', type=str, default='LR', choices=['LR', 'RL', 'TB', 'BT'], help='Diagram layout direction')
+    parser.add_argument('--compact', action='store_true', help='Use compact layout')
+    parser.add_argument('--engine', type=str, default='dot', 
+        choices=['dot', 'neato', 'fdp', 'sfdp', 'twopi', 'circo'], 
+        help='Graphviz layout engine: dot (hierarchical), neato/fdp/sfdp (force-directed), twopi (radial), circo (circular)')
+    parser.add_argument('--nodesep', type=int, default=6, 
+        help='Minimum space between nodes (especially useful for force-directed engines)')
+    parser.add_argument('--ranksep', type=int, default=7, 
+        help='Minimum space between rows/columns (especially useful for force-directed engines)')
+    parser.add_argument('--overlap', type=str, default=None, 
+        choices=['false', 'scale', 'prism', 'compress', 'vpsc', 'ortho', 'orthoxy', 'ortho_yx', 
+                'pcompress', 'ipsep', 'sep', 'sep+', 'true'],
+        help='Node overlap handling (especially useful for neato/fdp/sfdp):\n'
+             'false: no overlap\n'
+             'scale: reduce overlap\n'
+             'prism: force-directed overlap removal\n'
+             'compress: reduce size\n'
+             'vpsc: variable overlap removal\n'
+             'ortho/orthoxy/ortho_yx: orthogonal layouts\n'
+             'pcompress: parallel compression\n'
+             'ipsep: incremental separation\n'
+             'sep/sep+: separation methods\n'
+             'true: allow overlap')
+    parser.add_argument('--sort-by-incoming', action='store_true', help='Sort tables by number of incoming connections')
     parser.add_argument('--create-keys', action='store_true', help='Print SQL statements to create assumed foreign keys and exit')
-    parser.add_argument('--create-sqlite-keys', action='store_true', help='Print assumed FOREIGN KEY clauses for each table (for SQLite CREATE TABLE) and exit')
+    parser.add_argument('--create-sqlite-keys', action='store_true', help='Print assumed FOREIGN KEY clauses for each table and exit')
     parser.add_argument('--create-indexes', action='store_true', help='Print suggested CREATE INDEX statements and exit')
-    parser.add_argument('--show-indexes', action='store_true', help='Show an ⓘ symbol after columns that are indexed (PK or have an explicit index)')
+    parser.add_argument('--create-triggers', action='store_true', help='Print suggested CREATE TRIGGER statements and exit')
+    parser.add_argument('--show-indexes', action='store_true', help='Show an ⓘ symbol after columns that are indexed')
 
     args = parser.parse_args()
-    
+
+    # Handle interactive mode
+    if args.interactive:
+        interactive_menu(args)
+
+    # Handle non-interactive mode
     if args.create_indexes:
         # Only do index creation logic, ignore all other flags
         mapper = DatabaseMapper(assume_relationships=True)
-        if args.input_file.endswith('.db') or args.input_file.endswith('.sqlite') or args.input_file.endswith('.sqlite3'):
+        if args.input_file.endswith(('.db', '.sqlite', '.sqlite3')):
             mapper.parse_sqlite_db(args.input_file)
         else:
             mapper.parse_sql_file(args.input_file)
@@ -638,7 +1124,7 @@ def main():
     if args.create_keys:
         # Only do key creation logic, ignore all other flags
         mapper = DatabaseMapper(assume_relationships=True)
-        if args.input_file.endswith('.db') or args.input_file.endswith('.sqlite') or args.input_file.endswith('.sqlite3'):
+        if args.input_file.endswith(('.db', '.sqlite', '.sqlite3')):
             mapper.parse_sqlite_db(args.input_file)
         else:
             mapper.parse_sql_file(args.input_file)
@@ -657,7 +1143,7 @@ def main():
     if args.create_sqlite_keys:
         # Only do key creation logic, ignore all other flags
         mapper = DatabaseMapper(assume_relationships=True)
-        if args.input_file.endswith('.db') or args.input_file.endswith('.sqlite') or args.input_file.endswith('.sqlite3'):
+        if args.input_file.endswith(('.db', '.sqlite', '.sqlite3', '.db3')):
             mapper.parse_sqlite_db(args.input_file)
         else:
             mapper.parse_sql_file(args.input_file)
@@ -679,6 +1165,32 @@ def main():
             print()
         exit(0)
     
+    if args.create_triggers:
+        # Only do trigger creation logic, ignore all other flags
+        mapper = DatabaseMapper(assume_relationships=True)
+        if args.input_file.endswith(('.db', '.sqlite', '.sqlite3')):
+            mapper.parse_sqlite_db(args.input_file)
+        else:
+            mapper.parse_sql_file(args.input_file)
+        
+        suggested_triggers = mapper._suggest_triggers()
+        
+        print("Suggested Triggers:")
+        for table_name, triggers in suggested_triggers.items():
+            print(f"\n  {table_name}:")
+            # Group triggers by type
+            by_type = {}
+            for trigger_type, trigger_sql in triggers:
+                by_type.setdefault(trigger_type, []).append(trigger_sql)
+            
+            for trigger_type, trigger_list in by_type.items():
+                print(f"\n    {trigger_type.upper()} Triggers:")
+                for trigger in trigger_list:
+                    print(f"      {trigger}")
+        
+        exit(0)
+    
+    # Default: generate diagram
     mapper = DatabaseMapper(assume_relationships=args.assume)
     mapper.color_tables = args.color
     mapper.dark_mode = args.dark
@@ -696,7 +1208,7 @@ def main():
     mapper.sort_by_incoming = args.sort_by_incoming
     mapper.show_indexes = args.show_indexes
     
-    if args.input_file.endswith('.db') or args.input_file.endswith('.sqlite') or args.input_file.endswith('.sqlite3'):
+    if args.input_file.endswith(('.db', '.sqlite', '.sqlite3')):
         mapper.parse_sqlite_db(args.input_file)
     else:
         mapper.parse_sql_file(args.input_file)

@@ -38,6 +38,11 @@ A Python tool that creates hierarchical diagrams from SQLite databases or SQL sc
   
    Make sure that the executable path is added to the Path environmental variable
 
+4. (Optional) For interactive mode, install InquirerPy:
+   ```bash
+   pip install InquirerPy
+   ```
+
 ## Usage
 
 ### Command Line
@@ -82,6 +87,7 @@ python db_mapper.py <input_file> [options]
 - `--sort-by-incoming`: Sort tables by number of incoming connections (off by default). Enable for more central placement of referenced tables.
 - `--create-keys`: Print SQL statements to create all assumed foreign keys and exit. **All other flags are ignored.**
 - `--create-sqlite-keys`: Print assumed FOREIGN KEY clauses for each table (for SQLite CREATE TABLE) and exit. **All other flags are ignored.**
+- `--interactive, -i`: Launch an interactive menu to select actions and options instead of using flags. All features are available in both modes.
 
 #### Relationship Label Styles
 - When using `--assume`, explicit (real) foreign keys are shown in **bold**; assumed relationships are shown in *italic*.
@@ -172,6 +178,7 @@ mapper.generate_diagram('output_filename')  # Will create output_filename.png
 - Python 3.6+
 - sqlparse
 - graphviz (Python package and system install)
+- InquirerPy (for interactive CLI mode)
 
 ## Output
 
