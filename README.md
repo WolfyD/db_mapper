@@ -21,6 +21,8 @@ A Python tool that creates hierarchical diagrams from SQLite databases or SQL sc
 - **Sort tables by incoming connections** for more central placement of referenced tables
 - **Relationship label styles**: real foreign keys are **bold**, assumed are *italic* (with `--assume`)
 - **Generate SQL for missing foreign keys** with `--create-keys` and `--create-sqlite-keys`
+- **Interactive mode** with user-friendly menus and detailed help
+- **Comprehensive help system** explaining all options and best practices
 
 ## Installation
 
@@ -44,6 +46,31 @@ A Python tool that creates hierarchical diagrams from SQLite databases or SQL sc
    ```
 
 ## Usage
+
+### Interactive Mode
+
+The easiest way to use DB Mapper is through the interactive menu:
+
+```bash
+python db_mapper.py -i
+```
+
+This will guide you through:
+1. Selecting your database/SQL file
+2. Choosing the main action:
+   - Generate database diagram
+   - Generate SQL for missing foreign keys
+   - Generate SQLite FOREIGN KEY clauses
+   - Generate suggested indexes
+   - Generate suggested triggers
+   - Show detailed help
+3. Configuring diagram options:
+   - Basic options (colors, dark mode, etc.)
+   - Layout direction
+   - Layout engine
+   - Arrow style
+   - Font selection
+   - Advanced options (spacing, DPI, etc.)
 
 ### Command Line
 
@@ -72,15 +99,29 @@ python db_mapper.py <input_file> [options]
   - `Impact`
   - `Comic Sans MS`
 - `--arrow-type, -t <type>`: Arrow style for connections. Options:
-  - `curved` (default): Curved arrows
+  - `curved` (default): Curved arrows (works with all engines)
   - `polyline`: Straight arrows (only for dot engine)
   - `ortho`: Right-angled (orthogonal) arrows (only for dot engine)
 - `--engine <engine>`: Graphviz layout engine. Options:
-  - `dot` (default, hierarchical)
-  - `neato`, `fdp`, `sfdp`, `twopi`, `circo` (force-directed, radial, circular, etc.)
+  - `dot` (default, hierarchical, best for most diagrams)
+  - `neato` (force-directed, good for small to medium graphs)
+  - `fdp` (force-directed, good for large graphs)
+  - `sfdp` (force-directed, best for very large graphs)
+  - `twopi` (radial, good for hierarchical data)
+  - `circo` (circular, good for cyclic structures)
 - `--nodesep <int>`: Minimum space between nodes (default: 6 for 0.6). Enter 8 for 0.8, 15 for 1.5, etc. Anything below 1 is treated as 1 (0.1). Especially useful for force-directed engines.
 - `--ranksep <int>`: Minimum space between rows/columns (default: 7 for 0.7). Enter 10 for 1.0, 15 for 1.5, etc. Anything below 1 is treated as 1 (0.1). Especially useful for force-directed engines.
-- `--overlap <mode>`: Node overlap handling (e.g., `false`, `scale`, `prism`). Especially useful for neato/fdp to prevent node overlap.
+- `--overlap <mode>`: Node overlap handling (especially useful for neato/fdp/sfdp). Options:
+  - `false`: No overlap allowed
+  - `scale`: Reduce overlap by scaling
+  - `prism`: Force-directed overlap removal
+  - `compress`: Reduce size to avoid overlap
+  - `vpsc`: Variable overlap removal
+  - `ortho/orthoxy/ortho_yx`: Orthogonal layouts
+  - `pcompress`: Parallel compression
+  - `ipsep`: Incremental separation
+  - `sep/sep+`: Separation methods
+  - `true`: Allow overlap
 - `--font-size <int>`: Font size for all diagram text (default: 12). Increase for larger text, decrease for smaller.
 - `--dpi <int>`: Image resolution in DPI (default: 96). Increase for higher quality PNG output.
 - `--show-indexes`: Show an [i] symbol after columns that are indexed (PK or have an explicit index).
@@ -97,6 +138,7 @@ python db_mapper.py <input_file> [options]
 ```bash
 python db_mapper.py schema.sql --assume --color --dark --full --font Arial --arrow-type ortho --engine dot --nodesep 8 --ranksep 10 --overlap scale --font-size 14 --dpi 150 --show-indexes --sort-by-incoming -o my_diagram
 ```
+
 #### Example: Generate SQL for missing foreign keys
 
 ```bash
@@ -112,7 +154,6 @@ FOREIGN KEY (child_column) REFERENCES parent_table(parent_column);
 ...
 COMMIT;
 ```
-
 
 #### Real examples
 using [car_company_database](https://github.com/dtaivpp/car_company_database) by [dtaivpp](https://github.com/dtaivpp)
@@ -159,8 +200,6 @@ python db_mapper.py Car_Database.db --create-sqlite-keys
 >     FOREIGN KEY (model_id) REFERENCES Models(model_id)
 >
 
-
-
 ### Python API
 
 ```python
@@ -187,6 +226,30 @@ The tool generates a PNG file containing a hierarchical diagram of your database
 - Column data types and constraints
 - Relationships between tables (explicit using Fk and/or assumed based on naming conventions)
 - Optional: color, dark mode, custom font, and custom arrow style
+
+## Tips
+
+1. For large databases:
+   - Use SFDP engine
+   - Enable compact layout
+   - Use overlap handling
+   - Consider showing only relational columns
+
+2. For better readability:
+   - Use dark mode for light backgrounds
+   - Increase font size
+   - Use higher DPI for better quality
+   - Enable colors for better distinction
+
+3. For force-directed layouts:
+   - Adjust node and rank separation
+   - Use appropriate overlap handling
+   - Consider using curved arrows
+
+4. For hierarchical data:
+   - Use dot engine with TB layout
+   - Consider using ortho arrows
+   - Enable sort by incoming connections
 
 ---
 

@@ -592,6 +592,113 @@ class DatabaseMapper:
         
         return definite_indexes, possible_indexes
 
+    def _suggest_triggers(self) -> Dict[str, List[Tuple[str, str]]]:
+        """Suggest triggers for tables based on column characteristics.
+        Returns a dict of table_name -> list of (trigger_type, trigger_sql) tuples."""
+        suggested_triggers = {}
+        
+        for table_name, table_info in self.tables.items():
+            # Skip sqlite_sequence table
+            if table_name == 'sqlite_sequence':
+                continue
+                
+            triggers = []
+            columns = table_info['columns']
+            
+            # Find timestamp columns
+            timestamp_cols = [col['name'] for col in columns if col['type'].upper() in ('TIMESTAMP', 'DATETIME')]
+            # Find date columns
+            date_cols = [col['name'] for col in columns if col['type'].upper() in ('DATE')]
+            # Find email columns
+            email_cols = [col['name'] for col in columns if col['name'].lower().endswith('email')]
+            # Find phone columns
+            phone_cols = [col['name'] for col in columns if col['name'].lower().endswith(('phone', 'tel'))]
+            # Find status/type columns
+            status_cols = [col['name'] for col in columns if col['name'].lower().endswith(('status', 'type', 'state'))]
+            # Find deleted/active columns
+            deleted_cols = [col['name'] for col in columns if col['name'].lower().endswith(('deleted', 'active', 'enabled'))]
+            
+            # 1. Audit triggers (track changes)
+            updated_cols = [col for col in timestamp_cols if 'updated' in col.lower() or 'modified' in col.lower()]
+            if updated_cols:
+                triggers.append(('audit', f'''CREATE TRIGGER IF NOT EXISTS tr_{table_name}_audit_update
+AFTER UPDATE ON {table_name}
+BEGIN
+    UPDATE {table_name}
+    SET {', '.join(f"{col} = CURRENT_TIMESTAMP" for col in updated_cols)}
+    WHERE rowid = NEW.rowid;
+END;'''))
+
+            # 2. Validation triggers (email, phone)
+            if email_cols:
+                for col in email_cols:
+                    triggers.append(('validation', f'''CREATE TRIGGER IF NOT EXISTS tr_{table_name}_validate_email_{col}
+BEFORE INSERT ON {table_name}
+BEGIN
+    SELECT CASE 
+        WHEN NEW.{col} IS NOT NULL AND NEW.{col} NOT LIKE '%_@__%.__%'
+        THEN RAISE(ABORT, 'Invalid email format')
+    END;
+END;'''))
+
+            if phone_cols:
+                for col in phone_cols:
+                    triggers.append(('validation', f'''CREATE TRIGGER IF NOT EXISTS tr_{table_name}_validate_phone_{col}
+BEFORE INSERT ON {table_name}
+BEGIN
+    SELECT CASE 
+        WHEN NEW.{col} IS NOT NULL AND NEW.{col} NOT GLOB '[0-9]*'
+        THEN RAISE(ABORT, 'Phone number must contain only digits')
+    END;
+END;'''))
+
+            # 3. Auto-update triggers (timestamps)
+            created_cols = [col for col in timestamp_cols if 'created' in col.lower()]
+            if created_cols:
+                triggers.append(('auto_update', f'''CREATE TRIGGER IF NOT EXISTS tr_{table_name}_set_timestamps
+BEFORE INSERT ON {table_name}
+BEGIN
+    {'; '.join(f"SET NEW.{col} = CURRENT_TIMESTAMP" for col in created_cols)}
+END;'''))
+
+            # 4. Soft delete triggers
+            if deleted_cols:
+                for col in deleted_cols:
+                    if 'deleted' in col.lower():
+                        triggers.append(('soft_delete', f'''CREATE TRIGGER IF NOT EXISTS tr_{table_name}_soft_delete
+INSTEAD OF DELETE ON {table_name}
+BEGIN
+    UPDATE {table_name}
+    SET {col} = 1
+    WHERE rowid = OLD.rowid;
+END;'''))
+
+            # 5. Referential integrity triggers
+            for rel in self.relationships:
+                if rel[0] == table_name:  # This table is the child
+                    try:
+                        child_col = rel[2].split('→')[0].strip()
+                        parent_table = rel[1]
+                        parent_col = rel[2].split('→')[1].strip()
+                        triggers.append(('referential', f'''CREATE TRIGGER IF NOT EXISTS tr_{table_name}_check_fk_{child_col}
+BEFORE INSERT ON {table_name}
+BEGIN
+    SELECT CASE 
+        WHEN NEW.{child_col} IS NOT NULL AND NOT EXISTS (
+            SELECT 1 FROM {parent_table} WHERE {parent_col} = NEW.{child_col}
+        )
+        THEN RAISE(ABORT, 'Foreign key constraint failed')
+    END;
+END;'''))
+                    except IndexError:
+                        # Skip malformed relationships
+                        continue
+
+            if triggers:
+                suggested_triggers[table_name] = triggers
+        
+        return suggested_triggers
+
 def get_table_color(table_name, dark_mode=False):
     palette = BRIGHT_COLORS_DARK if dark_mode else BRIGHT_COLORS_LIGHT
     idx = int(hashlib.md5(table_name.encode()).hexdigest(), 16) % len(palette)
@@ -979,6 +1086,9 @@ def trigger_menu(args):
 
         # Get available tables
         tables = list(mapper.tables.keys())
+        if not tables:
+            print("\nNo tables found in the database.")
+            return
         
         # Trigger type selection
         trigger_questions = [
@@ -1014,25 +1124,42 @@ def trigger_menu(args):
         if "all" in trigger_answers["selected_tables"]:
             selected_tables = tables
 
+        if not selected_types:
+            print("\nNo trigger types selected.")
+            return
+
+        if not selected_tables:
+            print("\nNo tables selected.")
+            return
+
         # Generate and print triggers
         suggested_triggers = mapper._suggest_triggers()
         
         print("\nSuggested Triggers:")
+        found_triggers = False
         for table_name, triggers in suggested_triggers.items():
             if table_name not in selected_tables:
                 continue
                 
-            print(f"\n  {table_name}:")
             # Group triggers by type
             by_type = {}
             for trigger_type, trigger_sql in triggers:
                 if trigger_type in selected_types:
                     by_type.setdefault(trigger_type, []).append(trigger_sql)
             
-            for trigger_type, trigger_list in by_type.items():
-                print(f"\n    {trigger_type.upper()} Triggers:")
-                for trigger in trigger_list:
-                    print(f"      {trigger}")
+            if by_type:
+                found_triggers = True
+                print(f"\n-- Triggers for table: {table_name}")
+                for trigger_type, trigger_list in by_type.items():
+                    print(f"\n-- {trigger_type.upper()} Triggers:")
+                    for trigger in trigger_list:
+                        print(f"{trigger}")
+        
+        if not found_triggers:
+            print("\nNo triggers found matching the selected criteria.")
+        
+        # Exit after printing triggers
+        sys.exit(0)
     except KeyboardInterrupt:
         print("\nOperation cancelled.")
         sys.exit(0)
@@ -1119,7 +1246,7 @@ def main():
             for idx in indexes:
                 print(f"    {idx}")
         
-        exit(0)
+        sys.exit(0)
     
     if args.create_keys:
         # Only do key creation logic, ignore all other flags
@@ -1138,7 +1265,7 @@ def main():
             parent_col = parent_col.strip()
             print(f"ALTER TABLE {child}\nADD CONSTRAINT fk_{child}_{parent}\nFOREIGN KEY ({child_col}) REFERENCES {parent}({parent_col});\n")
         print('COMMIT;')
-        exit(0)
+        sys.exit(0)
     
     if args.create_sqlite_keys:
         # Only do key creation logic, ignore all other flags
@@ -1163,7 +1290,7 @@ def main():
                 comma = ',' if i < len(fks) - 1 else ''
                 print(f"    FOREIGN KEY ({child_col}) REFERENCES {parent}({parent_col}){comma}")
             print()
-        exit(0)
+        sys.exit(0)
     
     if args.create_triggers:
         # Only do trigger creation logic, ignore all other flags
@@ -1177,18 +1304,18 @@ def main():
         
         print("Suggested Triggers:")
         for table_name, triggers in suggested_triggers.items():
-            print(f"\n  {table_name}:")
+            print(f"\n-- Triggers for table: {table_name}")
             # Group triggers by type
             by_type = {}
             for trigger_type, trigger_sql in triggers:
                 by_type.setdefault(trigger_type, []).append(trigger_sql)
             
             for trigger_type, trigger_list in by_type.items():
-                print(f"\n    {trigger_type.upper()} Triggers:")
+                print(f"\n-- {trigger_type.upper()} Triggers:")
                 for trigger in trigger_list:
-                    print(f"      {trigger}")
+                    print(f"{trigger}")
         
-        exit(0)
+        sys.exit(0)
     
     # Default: generate diagram
     mapper = DatabaseMapper(assume_relationships=args.assume)
